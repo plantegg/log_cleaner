@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 日志清理脚本
-根据文件修改时间清理指定目录下的日志文件，保留指定百分比的最新文件
+根据磁盘使用率清理指定目录下的日志文件，当磁盘使用率超过阈值时删除最旧的文件
 """
 
 import os
@@ -31,6 +31,8 @@ def get_disk_usage(path):
             return usage_percent, total, used, free
         except:
             return None, 0, 0, 0
+
+def human_readable_size(size_bytes):
     """将字节转换为人类可读的格式"""
     if size_bytes == 0:
         return "0B"
@@ -42,7 +44,7 @@ def get_disk_usage(path):
         i += 1
     return "{:.1f}{}".format(size_bytes, size_names[i])
 
-def human_readable_size(size_bytes):
+def find_log_files(log_dir):
     """查找所有日志文件"""
     all_files = set()
     
@@ -68,21 +70,20 @@ def human_readable_size(size_bytes):
     log_files.sort(reverse=True)
     return log_files
 
-def find_log_files(log_dir):
+def main():
     parser = argparse.ArgumentParser(
-        description="根据修改时间清理日志文件，保留指定百分比的最新文件",
+        description="根据磁盘使用率清理日志文件，当磁盘使用率超过阈值时删除最旧的文件",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  %(prog)s /path/to/logs 70                           # 单个目录
-  %(prog)s /path/to/logs:/path2/logs:/path3/logs 70   # 多个目录，用冒号分隔
-  %(prog)s ./app/logs 80                              # 保留最新的80%%的文件
+  %(prog)s /path/to/logs 70                           # 单个目录，磁盘使用率到70%%停止
+  %(prog)s /path/to/logs:/path2/logs:/path3/logs 80   # 多个目录，磁盘使用率到80%%停止
         """
     )
     
     parser.add_argument("log_dirs", help="日志文件目录路径，多个目录用冒号(:)分隔")
-    parser.add_argument("keep_percent", type=int, 
-                       help="要保留的文件百分比 (1-99)")
+    parser.add_argument("disk_threshold", type=int, 
+                       help="磁盘使用率阈值 (1-99)，达到此使用率时停止清理")
     parser.add_argument("--dry-run", action="store_true",
                        help="仅显示将要删除的文件，不实际删除")
     parser.add_argument("--auto-confirm", action="store_true",
@@ -99,14 +100,47 @@ def find_log_files(log_dir):
             print("错误: 目录 '{}' 不存在".format(log_dir))
             sys.exit(1)
     
-    if not (1 <= args.keep_percent <= 99):
-        print("错误: 保留百分比必须是1-99之间的整数")
+    if not (1 <= args.disk_threshold <= 99):
+        print("错误: 磁盘使用率阈值必须是1-99之间的整数")
         sys.exit(1)
     
     print("开始分析 {} 个日志目录:".format(len(log_dirs)))
     for log_dir in log_dirs:
         print("  - {}".format(log_dir))
-    print("保留最新的 {}% 文件".format(args.keep_percent))
+    print("磁盘使用率阈值: {}%".format(args.disk_threshold))
+    
+    # 检查每个目录的磁盘使用率
+    need_cleanup = False
+    disk_info = {}
+    
+    for log_dir in log_dirs:
+        usage_percent, total, used, free = get_disk_usage(log_dir)
+        if usage_percent is None:
+            print("警告: 无法获取目录 {} 的磁盘使用率".format(log_dir))
+            continue
+            
+        disk_info[log_dir] = {
+            'usage': usage_percent,
+            'total': total,
+            'used': used,
+            'free': free
+        }
+        
+        print("  {}: 磁盘使用率 {:.1f}% (总计: {}, 已用: {}, 可用: {})".format(
+            log_dir, usage_percent, 
+            human_readable_size(total),
+            human_readable_size(used),
+            human_readable_size(free)
+        ))
+        
+        if usage_percent > args.disk_threshold:
+            need_cleanup = True
+    
+    if not need_cleanup:
+        print("\n所有目录的磁盘使用率都低于阈值 {}%，无需清理".format(args.disk_threshold))
+        sys.exit(0)
+    
+    print("\n发现磁盘使用率超过阈值的目录，开始清理...")
     
     # 查找所有目录中的日志文件
     all_log_files = []
@@ -124,78 +158,87 @@ def find_log_files(log_dir):
         sys.exit(0)
     
     total_files = len(log_files)
-    keep_count = int(total_files * args.keep_percent / 100)
-    delete_count = total_files - keep_count
-    
     print("\n总计找到 {} 个日志文件".format(total_files))
-    print("将保留最新的 {} 个文件".format(keep_count))
-    print("将删除最旧的 {} 个文件".format(delete_count))
     
-    if delete_count == 0:
-        print("无需删除任何文件")
-        sys.exit(0)
-    
-    # 获取要删除的文件列表（最旧的文件）
-    files_to_delete = log_files[-delete_count:]
-    
-    print("\n即将删除的文件（最旧的 {} 个）:".format(delete_count))
-    total_size = 0
-    for mtime, filepath in files_to_delete:
-        try:
-            file_size = os.path.getsize(filepath)
-            total_size += file_size
-            mod_time = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
-            print("  {}".format(filepath))
-            print("    修改时间: {}, 大小: {}".format(mod_time, human_readable_size(file_size)))
-        except OSError as e:
-            print("  {} (无法获取文件信息: {})".format(filepath, e))
-    
-    print("\n总计将释放约 {} 的磁盘空间".format(human_readable_size(total_size)))
-    
-    if args.dry_run:
-        print("\n[DRY RUN] 仅预览，未实际删除任何文件")
-        sys.exit(0)
-    
-    # 确认删除
-    if not args.auto_confirm:
-        try:
-            confirm = input("\n确认删除这些文件吗? (y/N): ").strip().lower()
-            if confirm not in ['y', 'yes']:
-                print("取消删除操作")
-                sys.exit(0)
-        except KeyboardInterrupt:
-            print("\n\n操作被用户取消")
-            sys.exit(0)
-    
-    # 执行删除
-    print("\n开始删除文件...")
+    # 逐个删除最旧的文件，直到磁盘使用率降到阈值以下
     deleted_count = 0
     deleted_size = 0
     failed_files = []
     
-    for mtime, filepath in files_to_delete:
+    print("\n开始删除最旧的文件，直到磁盘使用率降到 {}% 以下...".format(args.disk_threshold))
+    
+    if args.dry_run:
+        print("\n[DRY RUN] 预览将要删除的文件:")
+    
+    # 从最旧的文件开始删除
+    for mtime, filepath in reversed(log_files):
+        # 检查当前磁盘使用率
+        current_usage = None
+        for log_dir in log_dirs:
+            if filepath.startswith(log_dir):
+                usage_percent, _, _, _ = get_disk_usage(log_dir)
+                if usage_percent is not None and usage_percent <= args.disk_threshold:
+                    current_usage = usage_percent
+                    break
+        
+        if current_usage is not None and current_usage <= args.disk_threshold:
+            print("\n磁盘使用率已降到 {:.1f}%，达到阈值 {}%，停止清理".format(
+                current_usage, args.disk_threshold))
+            break
+        
         try:
             if os.path.exists(filepath):
                 file_size = os.path.getsize(filepath)
-                os.remove(filepath)
-                print("已删除: {}".format(filepath))
-                deleted_count += 1
-                deleted_size += file_size
+                mod_time = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                
+                if args.dry_run:
+                    print("  {} (修改时间: {}, 大小: {})".format(
+                        filepath, mod_time, human_readable_size(file_size)))
+                    deleted_count += 1
+                    deleted_size += file_size
+                else:
+                    # 确认删除
+                    if not args.auto_confirm and deleted_count == 0:
+                        try:
+                            confirm = input("\n开始删除文件，确认继续? (y/N): ").strip().lower()
+                            if confirm not in ['y', 'yes']:
+                                print("取消删除操作")
+                                sys.exit(0)
+                        except KeyboardInterrupt:
+                            print("\n\n操作被用户取消")
+                            sys.exit(0)
+                    
+                    os.remove(filepath)
+                    print("已删除: {} (大小: {})".format(filepath, human_readable_size(file_size)))
+                    deleted_count += 1
+                    deleted_size += file_size
             else:
-                print("文件不存在: {}".format(filepath))
+                if not args.dry_run:
+                    print("文件不存在: {}".format(filepath))
         except OSError as e:
             print("删除失败: {} ({})".format(filepath, e))
             failed_files.append(filepath)
     
     print("\n清理完成!")
-    print("成功删除了 {} 个文件".format(deleted_count))
-    print("释放了 {} 的磁盘空间".format(human_readable_size(deleted_size)))
+    if args.dry_run:
+        print("[DRY RUN] 预计删除 {} 个文件".format(deleted_count))
+        print("[DRY RUN] 预计释放 {} 的磁盘空间".format(human_readable_size(deleted_size)))
+    else:
+        print("成功删除了 {} 个文件".format(deleted_count))
+        print("释放了 {} 的磁盘空间".format(human_readable_size(deleted_size)))
+        
+        if failed_files:
+            print("删除失败的文件数: {}".format(len(failed_files)))
     
-    if failed_files:
-        print("删除失败的文件数: {}".format(len(failed_files)))
+    # 显示最终磁盘使用率
+    print("\n最终磁盘使用率:")
+    for log_dir in log_dirs:
+        usage_percent, total, used, free = get_disk_usage(log_dir)
+        if usage_percent is not None:
+            print("  {}: {:.1f}%".format(log_dir, usage_percent))
     
     # 清理空的日期目录
-    if not args.auto_confirm:
+    if not args.dry_run and not args.auto_confirm:
         try:
             clean_empty = input("\n是否清理所有目录中的空日期目录? (y/N): ").strip().lower()
             if clean_empty in ['y', 'yes']:
