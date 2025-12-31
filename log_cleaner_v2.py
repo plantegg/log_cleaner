@@ -16,21 +16,25 @@ import shutil
 def get_disk_usage(path):
     """获取指定路径所在磁盘的使用率"""
     try:
-        total, used, free = shutil.disk_usage(path)
-        usage_percent = (used / total) * 100
-        return usage_percent, total, used, free
-    except (OSError, AttributeError):
-        # Python 2 fallback
-        try:
-            import statvfs
-            st = os.statvfs(path)
-            total = st.f_blocks * st.f_frsize
-            free = st.f_available * st.f_frsize
-            used = total - free
+        # 先尝试 Python 3.3+ 的方法
+        if hasattr(shutil, 'disk_usage'):
+            total, used, free = shutil.disk_usage(path)
             usage_percent = (used / total) * 100
             return usage_percent, total, used, free
-        except:
-            return None, 0, 0, 0
+    except:
+        pass
+    
+    # Python 2 或 shutil.disk_usage 失败时的 fallback
+    try:
+        st = os.statvfs(path)
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        used = total - (st.f_bfree * st.f_frsize)
+        # 强制浮点数除法，兼容Python 2
+        usage_percent = (float(used) / float(total)) * 100
+        return usage_percent, total, used, free
+    except Exception as e:
+        return None, 0, 0, 0
 
 def human_readable_size(size_bytes):
     """将字节转换为人类可读的格式"""
@@ -52,7 +56,9 @@ def find_log_files(log_dir):
     for root, dirs, files in os.walk(log_dir):
         for file in files:
             if (file.endswith('.log') or 
-                re.match(r'log\.20\d{2}-\d{2}-\d{2}\.\d+\.log$', file) or
+                re.match(r'.*\.log\.20\d{2}-\d{2}-\d{2}-\d{2}$', file) or  # server.log.2025-12-01-02
+                re.match(r'.*\.log\.20\d{2}-\d{2}-\d{2}$', file) or        # controller.log.2021-05-16
+                re.match(r'log\.20\d{2}-\d{2}-\d{2}\.\d+\.log$', file) or  # log.2025-12-24.0.log
                 re.match(r'trace\.20\d{2}-\d{2}-\d{2}\.\d+\.log$', file) or
                 re.match(r'\d+\.log$', file)):
                 file_path = os.path.join(root, file)
@@ -66,8 +72,8 @@ def find_log_files(log_dir):
             mtime = os.path.getmtime(file_path)
             log_files.append((mtime, file_path))
     
-    # 按修改时间排序，最新的在前
-    log_files.sort(reverse=True)
+    # 按修改时间排序，最旧的在前
+    log_files.sort()
     return log_files
 
 def main():
@@ -149,8 +155,8 @@ def main():
         all_log_files.extend(log_files)
         print("  {}: 找到 {} 个文件".format(log_dir, len(log_files)))
     
-    # 重新按时间排序所有文件
-    all_log_files.sort(reverse=True)
+    # 重新按时间排序所有文件，最旧的在前
+    all_log_files.sort()
     log_files = all_log_files
     
     if not log_files:
