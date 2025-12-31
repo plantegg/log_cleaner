@@ -9,9 +9,36 @@ import os
 import sys
 import glob
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import shutil
+import subprocess
+
+def is_file_in_use(file_path):
+    """检查文件是否被进程使用"""
+    try:
+        # 使用lsof检查文件是否被打开
+        result = subprocess.check_output(['lsof', file_path], stderr=subprocess.DEVNULL)
+        return True  # 如果lsof有输出，说明文件被使用
+    except subprocess.CalledProcessError:
+        return False  # lsof返回非0状态码，说明文件未被使用
+    except OSError:
+        # lsof命令不存在，使用fuser作为备选
+        try:
+            result = subprocess.check_output(['fuser', file_path], stderr=subprocess.DEVNULL)
+            return True
+        except (subprocess.CalledProcessError, OSError):
+            return False  # 都失败了，假设文件未被使用
+
+def is_file_recent(file_path, hours=24):
+    """检查文件是否在指定小时内修改过"""
+    try:
+        mtime = os.path.getmtime(file_path)
+        file_time = datetime.fromtimestamp(mtime)
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        return file_time > cutoff_time
+    except OSError:
+        return True  # 如果无法获取时间，保守起见认为是最近的文件
 
 def get_disk_usage(path):
     """获取指定路径所在磁盘的使用率"""
@@ -177,7 +204,18 @@ def main():
         print("\n[DRY RUN] 预览将要删除的文件:")
     
     # 从最旧的文件开始删除
+    skipped_files = []
     for mtime, filepath in reversed(log_files):
+        # 安全检查1: 检查文件是否在最近24小时内修改
+        if is_file_recent(filepath, 24):
+            skipped_files.append((filepath, "最近24小时内的文件"))
+            continue
+            
+        # 安全检查2: 检查文件是否被进程使用
+        if is_file_in_use(filepath):
+            skipped_files.append((filepath, "文件正在被进程使用"))
+            continue
+        
         # 检查当前磁盘使用率
         current_usage = None
         for log_dir in log_dirs:
@@ -235,6 +273,12 @@ def main():
         
         if failed_files:
             print("删除失败的文件数: {}".format(len(failed_files)))
+    
+    # 显示跳过的文件
+    if skipped_files:
+        print("\n跳过的文件 ({} 个):".format(len(skipped_files)))
+        for filepath, reason in skipped_files:
+            print("  {} - {}".format(os.path.basename(filepath), reason))
     
     # 显示最终磁盘使用率
     print("\n最终磁盘使用率:")
