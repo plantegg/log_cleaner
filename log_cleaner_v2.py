@@ -17,15 +17,20 @@ import subprocess
 def is_file_in_use(file_path):
     """检查文件是否被进程使用"""
     try:
+        # Python 2/3 兼容的空设备
+        devnull = open(os.devnull, 'w')
         # 使用lsof检查文件是否被打开
-        result = subprocess.check_output(['lsof', file_path], stderr=subprocess.DEVNULL)
+        result = subprocess.check_output(['lsof', file_path], stderr=devnull)
+        devnull.close()
         return True  # 如果lsof有输出，说明文件被使用
     except subprocess.CalledProcessError:
         return False  # lsof返回非0状态码，说明文件未被使用
     except OSError:
         # lsof命令不存在，使用fuser作为备选
         try:
-            result = subprocess.check_output(['fuser', file_path], stderr=subprocess.DEVNULL)
+            devnull = open(os.devnull, 'w')
+            result = subprocess.check_output(['fuser', file_path], stderr=devnull)
+            devnull.close()
             return True
         except (subprocess.CalledProcessError, OSError):
             return False  # 都失败了，假设文件未被使用
